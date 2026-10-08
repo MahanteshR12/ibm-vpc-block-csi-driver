@@ -524,7 +524,7 @@ func TestVolumeGroupSnapshotMissingMemberDetailsSanity(t *testing.T) {
 			wantMessage: "individual member snapshot details are not available",
 		},
 		{
-			name: "get response is missing member snapshot ID",
+			name: "get response is missing member snapshot CRN",
 			configure: func(session *fakeProviderSession) {
 				session.groupSnapshots["missing-member-id"] = &fakeGroupSnapshot{
 					GroupSnapshot: &provider.GroupSnapshot{
@@ -541,7 +541,7 @@ func TestVolumeGroupSnapshotMissingMemberDetailsSanity(t *testing.T) {
 				return err
 			},
 			wantCode:    codes.Internal,
-			wantMessage: "did not include individual member snapshot IDs",
+			wantMessage: "did not include individual member snapshot CRNs",
 		},
 		{
 			name: "get response is missing source volume ID",

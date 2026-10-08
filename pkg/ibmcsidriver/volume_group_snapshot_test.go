@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IBM/ibmcloud-volume-interface/lib/provider"
 	providerError "github.com/IBM/ibmcloud-volume-interface/lib/utils"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
@@ -33,7 +34,81 @@ func TestVolumeGroupSnapshotStatusErrorIncludesMessageAndRequestID(t *testing.T)
 	assert.True(t, strings.Contains(message, "request ID: request-id"))
 }
 
-func TestIsVolumeGroupSnapshotNotFoundError(t *testing.T) {
+// Source-volume resolution returns all member volume IDs or rejects the whole list.
+func TestResolveGroupSnapshotSourceVolumes(t *testing.T) {
+	testCases := []struct {
+		name        string
+		snapshots   []*provider.Snapshot
+		expectedIDs []string
+		expectedOK  bool
+	}{
+		{name: "nil members"},
+		{name: "empty members", snapshots: []*provider.Snapshot{}},
+		{
+			name:      "nil member after a valid member",
+			snapshots: []*provider.Snapshot{{VolumeID: "volume-1"}, nil},
+		},
+		{
+			name:      "missing source volume after a valid member",
+			snapshots: []*provider.Snapshot{{VolumeID: "volume-1"}, {SnapshotCRN: "snapshot-crn-2"}},
+		},
+		{
+			name:        "complete source volumes",
+			snapshots:   []*provider.Snapshot{{VolumeID: "volume-2"}, {VolumeID: "volume-1"}},
+			expectedIDs: []string{"volume-2", "volume-1"},
+			expectedOK:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, ok := resolveGroupSnapshotSourceVolumes(tc.snapshots)
+			assert.Equal(t, tc.expectedOK, ok)
+			assert.Equal(t, tc.expectedIDs, ids)
+		})
+	}
+}
+
+// Member resolution uses CRNs only and never accepts a partial member list.
+func TestResolveGroupSnapshotMemberIDs(t *testing.T) {
+	testCases := []struct {
+		name         string
+		snapshots    []*provider.Snapshot
+		expectedCRNs []string
+		expectedOK   bool
+	}{
+		{name: "nil members"},
+		{name: "empty members", snapshots: []*provider.Snapshot{}},
+		{
+			name:      "nil member after a valid member",
+			snapshots: []*provider.Snapshot{{SnapshotCRN: "snapshot-crn-1"}, nil},
+		},
+		{
+			name:      "missing CRN after a valid member",
+			snapshots: []*provider.Snapshot{{SnapshotCRN: "snapshot-crn-1"}, {VolumeID: "volume-2"}},
+		},
+		{
+			name:      "short snapshot ID without CRN",
+			snapshots: []*provider.Snapshot{{SnapshotID: "snapshot-id-1", VolumeID: "volume-1"}},
+		},
+		{
+			name:         "complete CRNs",
+			snapshots:    []*provider.Snapshot{{SnapshotCRN: "snapshot-crn-2"}, {SnapshotCRN: "snapshot-crn-1"}},
+			expectedCRNs: []string{"snapshot-crn-2", "snapshot-crn-1"},
+			expectedOK:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			crns, ok := resolveGroupSnapshotMemberIDs(tc.snapshots)
+			assert.Equal(t, tc.expectedOK, ok)
+			assert.Equal(t, tc.expectedCRNs, crns)
+		})
+	}
+}
+
+func TestIsGroupSnapshotNotFound(t *testing.T) {
 	groupNotFoundErr := providerError.Message{
 		Type:         providerError.DeletionFailed,
 		BackendError: "Code:snapshot_consistency_groups_not_found, RC:404",
@@ -43,9 +118,11 @@ func TestIsVolumeGroupSnapshotNotFoundError(t *testing.T) {
 		BackendError: "Code:snapshots_not_found, RC:404",
 	}
 
-	assert.True(t, isVolumeGroupSnapshotNotFoundError(groupNotFoundErr))
-	assert.True(t, isVolumeGroupSnapshotNotFoundError(membersNotFoundErr))
-	assert.False(t, isVolumeGroupSnapshotNotFoundError(providerError.Message{Type: providerError.DeletionFailed}))
+	assert.False(t, isGroupSnapshotNotFound(nil))
+	assert.True(t, isGroupSnapshotNotFound(groupNotFoundErr))
+	assert.True(t, isGroupSnapshotNotFound(providerError.Message{Type: providerError.EntityNotFound}))
+	assert.False(t, isGroupSnapshotNotFound(membersNotFoundErr))
+	assert.False(t, isGroupSnapshotNotFound(providerError.Message{Type: providerError.DeletionFailed}))
 }
 
 func TestVolumeGroupSnapshotErrorCode(t *testing.T) {

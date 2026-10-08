@@ -27,83 +27,69 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// groupSnapshotSourceVolumeIDs returns complete source-volume membership.
-// The boolean is false when backend member snapshot details are not yet available.
-func groupSnapshotSourceVolumeIDs(groupSnapshot *provider.GroupSnapshot) ([]string, bool) {
-	if groupSnapshot == nil {
+// resolveGroupSnapshotSourceVolumes returns the source volume ID for each member snapshot.
+// The boolean is false when any member has no source volume ID yet.
+func resolveGroupSnapshotSourceVolumes(snapshots []*provider.Snapshot) ([]string, bool) {
+	if len(snapshots) == 0 {
 		return nil, false
 	}
 
-	existingVolumeIDs := make([]string, 0, len(groupSnapshot.Snapshots))
-	for _, snapshot := range groupSnapshot.Snapshots {
+	volumeIDs := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
 		if snapshot == nil || snapshot.VolumeID == "" {
 			return nil, false
 		}
-		existingVolumeIDs = append(existingVolumeIDs, snapshot.VolumeID)
+		volumeIDs = append(volumeIDs, snapshot.VolumeID)
 	}
-	if len(existingVolumeIDs) == 0 {
-		return nil, false
-	}
-	return existingVolumeIDs, true
+
+	return volumeIDs, true
 }
 
-// groupSnapshotMemberIDs returns the CSI-facing member identifiers, preferring
-// CRNs because those are exposed as SnapshotId in group snapshot responses.
-func groupSnapshotMemberIDs(groupSnapshot *provider.GroupSnapshot) ([]string, bool) {
-	if groupSnapshot == nil {
+// resolveGroupSnapshotMemberIDs returns the CRN for each member snapshot.
+// The boolean is false when any member has no CRN.
+func resolveGroupSnapshotMemberIDs(snapshots []*provider.Snapshot) ([]string, bool) {
+	if len(snapshots) == 0 {
 		return nil, false
 	}
 
-	snapshotIDs := make([]string, 0, len(groupSnapshot.Snapshots))
-	for _, snapshot := range groupSnapshot.Snapshots {
-		if snapshot == nil {
+	crns := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot == nil || snapshot.SnapshotCRN == "" {
 			return nil, false
 		}
-		snapshotID := snapshot.SnapshotCRN
-		if snapshotID == "" {
-			snapshotID = snapshot.SnapshotID
-		}
-		if snapshotID == "" {
-			return nil, false
-		}
-		snapshotIDs = append(snapshotIDs, snapshotID)
+		crns = append(crns, snapshot.SnapshotCRN)
 	}
-	if len(snapshotIDs) == 0 {
-		return nil, false
-	}
-	return snapshotIDs, true
+
+	return crns, true
 }
 
-// equalStringSets compares unordered CSI identifier lists while preserving
-// duplicate counts.
-func equalStringSets(left, right []string) bool {
+// matchIDs reports whether left and right contain the same IDs regardless of
+// order, preserving duplicate counts.
+func matchIDs(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
 	}
 
 	counts := make(map[string]int, len(left))
-	for _, value := range left {
-		counts[value]++
+	for _, id := range left {
+		counts[id]++
 	}
-	for _, value := range right {
-		if counts[value] == 0 {
+	for _, id := range right {
+		if counts[id] == 0 {
 			return false
 		}
-		counts[value]--
+		counts[id]--
 	}
 	return true
 }
 
-// isVolumeGroupSnapshotNotFoundError identifies the VPC not-found response even
-// when volume-vpc wraps it as a group snapshot deletion failure.
-func isVolumeGroupSnapshotNotFoundError(err error) bool {
+// isGroupSnapshotNotFound reports whether the error indicates the consistency group does not exist on the VPC backend.
+func isGroupSnapshotNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	errorText := strings.ToLower(strings.ReplaceAll(err.Error(), " ", ""))
-	return strings.Contains(errorText, "snapshot_consistency_groups_not_found") ||
-		strings.Contains(errorText, "snapshots_not_found") ||
+	return strings.Contains(err.Error(), "snapshot_consistency_groups_not_found") ||
 		providerError.GetErrorType(err) == providerError.EntityNotFound
 }
 

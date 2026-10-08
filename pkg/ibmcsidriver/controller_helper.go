@@ -472,7 +472,7 @@ func getResourceGroup(logger *zap.Logger, snapshotParameters map[string]string, 
 
 	}
 
-	// return cluster's resource group
+	// return cluster's resource group from storage-secret-store
 	logger.Info("Using cluster's resource group", zap.String("resourceGroup", config.VPC.G2ResourceGroupID))
 	return config.VPC.G2ResourceGroupID
 }

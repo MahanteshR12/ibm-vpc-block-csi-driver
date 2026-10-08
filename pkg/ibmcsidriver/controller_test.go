@@ -1859,6 +1859,80 @@ func TestCreateVolumeGroupSnapshotRetriesWhenCreatedMembershipIsUnavailable(t *t
 	assert.Contains(t, status.Convert(err).Message(), "was created, but its individual member snapshot details are not available")
 }
 
+// A nil provider result must return an error instead of panicking while reading members.
+func TestCreateVolumeGroupSnapshotRejectsNilGroupResponse(t *testing.T) {
+	t.Setenv(vgsFeatureFlag, "true")
+	logger, teardown := cloudProvider.GetTestLogger(t)
+	defer teardown()
+
+	icDriver := initIBMCSIDriver(t)
+	fakeSession, err := icDriver.cs.CSIProvider.GetProviderSession(context.Background(), logger)
+	assert.NoError(t, err)
+	fakeStructSession, ok := fakeSession.(*fake.FakeSession)
+	assert.True(t, ok)
+	fakeStructSession.GetGroupSnapshotByNameReturns(nil, nil)
+	fakeStructSession.CreateGroupSnapshotReturns(nil, nil)
+
+	response, err := icDriver.cs.CreateVolumeGroupSnapshot(context.Background(), &csi.CreateVolumeGroupSnapshotRequest{
+		Name:            "group-snapshot-name",
+		SourceVolumeIds: []string{"volume-id-1"},
+	})
+
+	assert.Nil(t, response)
+	assert.Equal(t, codes.Aborted, status.Code(err))
+	assert.Contains(t, status.Convert(err).Message(), "backend returned no details")
+	assert.Equal(t, 1, fakeStructSession.CreateGroupSnapshotCallCount())
+}
+
+// Both Create paths must reject missing CRNs rather than return empty CSI snapshot IDs.
+func TestCreateVolumeGroupSnapshotRejectsMissingMemberCRNs(t *testing.T) {
+	t.Setenv(vgsFeatureFlag, "true")
+	testCases := []struct {
+		name                string
+		existingGroup       bool
+		expectedCreateCalls int
+	}{
+		{name: "existing group", existingGroup: true, expectedCreateCalls: 0},
+		{name: "new group", existingGroup: false, expectedCreateCalls: 1},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, teardown := cloudProvider.GetTestLogger(t)
+			defer teardown()
+			icDriver := initIBMCSIDriver(t)
+			fakeSession, err := icDriver.cs.CSIProvider.GetProviderSession(context.Background(), logger)
+			assert.NoError(t, err)
+			fakeStructSession, ok := fakeSession.(*fake.FakeSession)
+			assert.True(t, ok)
+
+			groupSnapshot := &provider.GroupSnapshot{
+				GroupSnapshotID: "group-snapshot-id",
+				Snapshots: []*provider.Snapshot{
+					{SnapshotID: "snapshot-id-1", VolumeID: "volume-id-1"},
+				},
+			}
+			if tc.existingGroup {
+				fakeStructSession.GetGroupSnapshotByNameReturns(groupSnapshot, nil)
+			} else {
+				fakeStructSession.GetGroupSnapshotByNameReturns(nil, nil)
+				fakeStructSession.CreateGroupSnapshotReturns(groupSnapshot, nil)
+			}
+
+			response, err := icDriver.cs.CreateVolumeGroupSnapshot(context.Background(), &csi.CreateVolumeGroupSnapshotRequest{
+				Name:            "group-snapshot-name",
+				SourceVolumeIds: []string{"volume-id-1"},
+			})
+
+			assert.Nil(t, response)
+			assert.Equal(t, codes.Internal, status.Code(err))
+			assert.Contains(t, status.Convert(err).Message(), "individual member snapshot CRNs")
+			assert.Equal(t, 1, fakeStructSession.GetGroupSnapshotByNameCallCount())
+			assert.Equal(t, tc.expectedCreateCalls, fakeStructSession.CreateGroupSnapshotCallCount())
+		})
+	}
+}
+
 func TestCreateVolumeGroupSnapshotRejectsExistingNameWithDifferentSources(t *testing.T) {
 	t.Setenv(vgsFeatureFlag, "true")
 	logger, teardown := cloudProvider.GetTestLogger(t)
@@ -1967,6 +2041,32 @@ func TestDeleteVolumeGroupSnapshotNotFoundIsIdempotent(t *testing.T) {
 	assert.Equal(t, []string{"snapshot-id-1", "snapshot-id-2"}, snapshotIDs)
 }
 
+func TestDeleteVolumeGroupSnapshotMemberNotFoundIsNotSuccess(t *testing.T) {
+	t.Setenv(vgsFeatureFlag, "true")
+	logger, teardown := cloudProvider.GetTestLogger(t)
+	defer teardown()
+
+	icDriver := initIBMCSIDriver(t)
+	fakeSession, err := icDriver.cs.CSIProvider.GetProviderSession(context.Background(), logger)
+	assert.Nil(t, err)
+	fakeStructSession, ok := fakeSession.(*fake.FakeSession)
+	assert.Equal(t, true, ok)
+	fakeStructSession.DeleteGroupSnapshotReturns(providerError.Message{
+		Code:         "FailedToDeleteGroupSnapshot",
+		Type:         providerError.DeletionFailed,
+		BackendError: "Code:snapshots_not_found, RC:404",
+	})
+
+	response, err := icDriver.cs.DeleteVolumeGroupSnapshot(context.Background(), &csi.DeleteVolumeGroupSnapshotRequest{
+		GroupSnapshotId: "group-snapshot-id",
+		SnapshotIds:     []string{"snapshot-id-1", "snapshot-id-2"},
+	})
+
+	assert.Nil(t, response)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, fakeStructSession.DeleteGroupSnapshotCallCount())
+}
+
 func TestGetVolumeGroupSnapshot(t *testing.T) {
 	t.Setenv(vgsFeatureFlag, "true")
 	logger, teardown := cloudProvider.GetTestLogger(t)
@@ -2061,6 +2161,35 @@ func TestGetVolumeGroupSnapshotRejectsMismatchedMemberIDs(t *testing.T) {
 	assert.Nil(t, response)
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 	assert.Contains(t, status.Convert(err).Message(), "provided individual member snapshot IDs do not match")
+}
+
+// A short VPC snapshot ID cannot replace the CRN used in CSI responses.
+func TestGetVolumeGroupSnapshotRejectsMissingMemberCRNs(t *testing.T) {
+	t.Setenv(vgsFeatureFlag, "true")
+	logger, teardown := cloudProvider.GetTestLogger(t)
+	defer teardown()
+
+	icDriver := initIBMCSIDriver(t)
+	fakeSession, err := icDriver.cs.CSIProvider.GetProviderSession(context.Background(), logger)
+	assert.NoError(t, err)
+	fakeStructSession, ok := fakeSession.(*fake.FakeSession)
+	assert.True(t, ok)
+	fakeStructSession.GetGroupSnapshotReturns(&provider.GroupSnapshot{
+		GroupSnapshotID: "group-snapshot-id",
+		Snapshots: []*provider.Snapshot{
+			{SnapshotID: "snapshot-id-1", VolumeID: "volume-id-1"},
+		},
+	}, nil)
+
+	response, err := icDriver.cs.GetVolumeGroupSnapshot(context.Background(), &csi.GetVolumeGroupSnapshotRequest{
+		GroupSnapshotId: "group-snapshot-id",
+		SnapshotIds:     []string{"snapshot-id-1"},
+	})
+
+	assert.Nil(t, response)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.Contains(t, status.Convert(err).Message(), "individual member snapshot CRNs")
+	assert.Equal(t, 1, fakeStructSession.GetGroupSnapshotCallCount())
 }
 
 func TestGetVolumeGroupSnapshotRetriesMissingMemberDetails(t *testing.T) {
