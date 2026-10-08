@@ -55,6 +55,46 @@ func TestVolumeGroupSnapshotErrorCode(t *testing.T) {
 		expected codes.Code
 	}{
 		{
+			name: "member lookup permission denied",
+			err: providerError.Message{
+				Code:         "GroupSnapshotMemberLookupFailed",
+				Type:         providerError.RetrivalFailed,
+				RC:           500,
+				BackendError: "Trace Code:member-lookup-trace, Code:snapshots_not_authorized, RC:403 Forbidden",
+			},
+			expected: codes.PermissionDenied,
+		},
+		{
+			name: "member lookup authentication failed",
+			err: providerError.Message{
+				Code:         "GroupSnapshotMemberLookupFailed",
+				Type:         providerError.RetrivalFailed,
+				RC:           500,
+				BackendError: "Trace Code:member-lookup-trace, Code:token_invalid, RC:401 Unauthorized",
+			},
+			expected: codes.Unauthenticated,
+		},
+		{
+			name: "member lookup rate limited",
+			err: providerError.Message{
+				Code:         "GroupSnapshotMemberLookupFailed",
+				Type:         providerError.RetrivalFailed,
+				RC:           500,
+				BackendError: "Trace Code:member-lookup-trace, Code:snapshots_too_many_requests, RC:429 Too Many Requests",
+			},
+			expected: codes.ResourceExhausted,
+		},
+		{
+			name: "member lookup internal backend error",
+			err: providerError.Message{
+				Code:         "GroupSnapshotMemberLookupFailed",
+				Type:         providerError.RetrivalFailed,
+				RC:           500,
+				BackendError: "Trace Code:member-lookup-trace, Code:internal_error, RC:500 Internal Server Error",
+			},
+			expected: codes.Unavailable,
+		},
+		{
 			name: "source volume is not attached",
 			err: providerError.Message{
 				Type:         providerError.ProvisioningFailed,

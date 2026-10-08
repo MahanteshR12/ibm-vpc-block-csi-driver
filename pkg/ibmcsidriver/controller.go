@@ -880,7 +880,7 @@ func (csiCS *CSIControllerServer) GetVolumeGroupSnapshot(ctx context.Context, re
 		return nil, volumeGroupSnapshotStatusError(codes.Internal, requestID, "backend response for volume group snapshot %q did not include individual member snapshot IDs", groupSnapshotID)
 	}
 	if _, sourceMembershipAvailable := groupSnapshotSourceVolumeIDs(groupSnapshot); !sourceMembershipAvailable {
-		return nil, volumeGroupSnapshotStatusError(codes.Internal, requestID, "backend response for volume group snapshot %q did not include source volume IDs for individual member snapshots", groupSnapshotID)
+		return nil, volumeGroupSnapshotStatusError(codes.Aborted, requestID, "volume group snapshot %q exists, but its individual member snapshot details are not available; retry the request", groupSnapshotID)
 	}
 	if !equalStringSets(snapshotIDs, memberSnapshotIDs) {
 		return nil, volumeGroupSnapshotStatusError(codes.InvalidArgument, requestID, "provided individual member snapshot IDs do not match volume group snapshot %q", groupSnapshotID)

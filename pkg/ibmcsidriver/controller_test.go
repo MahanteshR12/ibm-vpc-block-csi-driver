@@ -2063,7 +2063,7 @@ func TestGetVolumeGroupSnapshotRejectsMismatchedMemberIDs(t *testing.T) {
 	assert.Contains(t, status.Convert(err).Message(), "provided individual member snapshot IDs do not match")
 }
 
-func TestGetVolumeGroupSnapshotRejectsMissingSourceVolumeIDs(t *testing.T) {
+func TestGetVolumeGroupSnapshotRetriesMissingMemberDetails(t *testing.T) {
 	t.Setenv(vgsFeatureFlag, "true")
 	logger, teardown := cloudProvider.GetTestLogger(t)
 	defer teardown()
@@ -2079,6 +2079,13 @@ func TestGetVolumeGroupSnapshotRejectsMissingSourceVolumeIDs(t *testing.T) {
 			{SnapshotCRN: "snapshot-crn-1"},
 		},
 	}, nil)
+	fakeStructSession.GetGroupSnapshotReturnsOnCall(1, &provider.GroupSnapshot{
+		GroupSnapshotID: "group-snapshot-id",
+		ReadyToUse:      true,
+		Snapshots: []*provider.Snapshot{
+			{SnapshotCRN: "snapshot-crn-1", VolumeID: "volume-id-1", ReadyToUse: true},
+		},
+	}, nil)
 
 	response, err := icDriver.cs.GetVolumeGroupSnapshot(context.Background(), &csi.GetVolumeGroupSnapshotRequest{
 		GroupSnapshotId: "group-snapshot-id",
@@ -2086,8 +2093,22 @@ func TestGetVolumeGroupSnapshotRejectsMissingSourceVolumeIDs(t *testing.T) {
 	})
 
 	assert.Nil(t, response)
-	assert.Equal(t, codes.Internal, status.Code(err))
-	assert.Contains(t, status.Convert(err).Message(), "did not include source volume IDs")
+	assert.Equal(t, codes.Aborted, status.Code(err))
+	assert.Contains(t, status.Convert(err).Message(), "individual member snapshot details are not available; retry the request")
+
+	response, err = icDriver.cs.GetVolumeGroupSnapshot(context.Background(), &csi.GetVolumeGroupSnapshotRequest{
+		GroupSnapshotId: "group-snapshot-id",
+		SnapshotIds:     []string{"snapshot-crn-1"},
+	})
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, response) {
+		assert.True(t, response.GetGroupSnapshot().GetReadyToUse())
+		if assert.Len(t, response.GetGroupSnapshot().GetSnapshots(), 1) {
+			assert.Equal(t, "volume-id-1", response.GetGroupSnapshot().GetSnapshots()[0].GetSourceVolumeId())
+		}
+	}
+	assert.Equal(t, 2, fakeStructSession.GetGroupSnapshotCallCount())
 }
 
 func TestGetVolumeGroupSnapshotNotFound(t *testing.T) {

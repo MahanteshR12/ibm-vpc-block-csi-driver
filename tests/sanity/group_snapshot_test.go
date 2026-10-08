@@ -287,12 +287,62 @@ func TestVolumeGroupSnapshotBackendErrorSanity(t *testing.T) {
 	t.Setenv("IS_VGS_ENABLED", "true")
 	t.Setenv("CUSTOM_SNAPSHOT_CREATE_DELAY", "0")
 
+	memberLookupFailure := providerError.Message{
+		Code:         "GroupSnapshotMemberLookupFailed",
+		Type:         providerError.RetrivalFailed,
+		Description:  "Failed to retrieve individual member snapshot details for the snapshot consistency group with ID 'member-lookup-group'.",
+		BackendError: "Trace Code:member-lookup-trace, Code:snapshots_not_authorized, RC:403 Forbidden",
+		RC:           500,
+	}
 	testCases := []struct {
-		name      string
-		configure func(*fakeProviderSession)
-		call      func(context.Context, csi.GroupControllerClient) error
-		wantCode  codes.Code
+		name        string
+		configure   func(*fakeProviderSession)
+		call        func(context.Context, csi.GroupControllerClient) error
+		wantCode    codes.Code
+		wantMessage string
 	}{
+		{
+			name: "existing group member lookup permission denied",
+			configure: func(session *fakeProviderSession) {
+				session.getGroupSnapshotByNameErr = memberLookupFailure
+			},
+			call: func(ctx context.Context, client csi.GroupControllerClient) error {
+				_, err := client.CreateVolumeGroupSnapshot(ctx, &csi.CreateVolumeGroupSnapshotRequest{
+					Name: "member-lookup-group", SourceVolumeIds: []string{"volume-1"},
+				})
+				return err
+			},
+			wantCode:    codes.PermissionDenied,
+			wantMessage: "member-lookup-trace",
+		},
+		{
+			name: "new group member lookup permission denied",
+			configure: func(session *fakeProviderSession) {
+				session.createGroupSnapshotErr = memberLookupFailure
+			},
+			call: func(ctx context.Context, client csi.GroupControllerClient) error {
+				_, err := client.CreateVolumeGroupSnapshot(ctx, &csi.CreateVolumeGroupSnapshotRequest{
+					Name: "member-lookup-group", SourceVolumeIds: []string{"volume-1"},
+				})
+				return err
+			},
+			wantCode:    codes.PermissionDenied,
+			wantMessage: "member-lookup-trace",
+		},
+		{
+			name: "get group member lookup permission denied",
+			configure: func(session *fakeProviderSession) {
+				session.getGroupSnapshotErr = memberLookupFailure
+			},
+			call: func(ctx context.Context, client csi.GroupControllerClient) error {
+				_, err := client.GetVolumeGroupSnapshot(ctx, &csi.GetVolumeGroupSnapshotRequest{
+					GroupSnapshotId: "member-lookup-group", SnapshotIds: []string{"snapshot-1"},
+				})
+				return err
+			},
+			wantCode:    codes.PermissionDenied,
+			wantMessage: "member-lookup-trace",
+		},
 		{
 			name: "lookup service unavailable",
 			configure: func(session *fakeProviderSession) {
@@ -369,6 +419,9 @@ func TestVolumeGroupSnapshotBackendErrorSanity(t *testing.T) {
 
 			err := tc.call(ctx, client)
 			requireRPCCode(t, err, tc.wantCode)
+			if tc.wantMessage != "" && !strings.Contains(status.Convert(err).Message(), tc.wantMessage) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantMessage, err)
+			}
 		})
 	}
 }
@@ -507,8 +560,8 @@ func TestVolumeGroupSnapshotMissingMemberDetailsSanity(t *testing.T) {
 				})
 				return err
 			},
-			wantCode:    codes.Internal,
-			wantMessage: "did not include source volume IDs",
+			wantCode:    codes.Aborted,
+			wantMessage: "individual member snapshot details are not available; retry the request",
 		},
 	}
 

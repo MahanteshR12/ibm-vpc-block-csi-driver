@@ -35,6 +35,7 @@ import (
 )
 
 func TestSetup(t *testing.T) {
+	// Enable VGS so this setup test also registers the GroupController service.
 	t.Setenv(vgsFeatureFlag, "true")
 	goodEndpoint := flag.String("endpoint", "unix:/tmp/testcsi.sock", "Test CSI endpoint")
 	logger, teardown := cloudProvider.GetTestLogger(t)
