@@ -31,6 +31,7 @@ import (
 	"github.com/IBM/ibm-csi-common/pkg/utils"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -46,10 +47,14 @@ const errorBlockDevice = "/for/errorblock"
 const notBlockDevice = "/for/notblocktest"
 
 type MockStatUtils struct {
+	fsInfoErr error
 }
 
 func (su *MockStatUtils) FSInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
-	return 1, 1, 1, 1, 1, 1, nil
+	if su.fsInfoErr != nil {
+		return 0, 0, 0, 0, 0, 0, su.fsInfoErr
+	}
+	return 1024000, 4096000, 2867200, 200, 150, 50, nil
 }
 
 func (su *MockStatUtils) DeviceInfo(path string) (int64, error) {
@@ -659,16 +664,16 @@ func TestNodeGetVolumeStats(t *testing.T) {
 			resp: &csi.NodeGetVolumeStatsResponse{
 				Usage: []*csi.VolumeUsage{
 					{
-						Available: 1,
-						Total:     1,
-						Used:      1,
-						Unit:      1,
+						Available: 1024000,
+						Total:     4096000,
+						Used:      2867200,
+						Unit:      csi.VolumeUsage_BYTES,
 					},
 					{
-						Available: 1,
-						Total:     1,
-						Used:      1,
-						Unit:      2,
+						Available: 150,
+						Total:     200,
+						Used:      50,
+						Unit:      csi.VolumeUsage_INODES,
 					},
 				},
 			},
@@ -1031,6 +1036,38 @@ func TestCollectMountOptions(t *testing.T) {
 			assert.Equal(t, tc.expectedResult, result, "Mount options should match expected result")
 		})
 	}
+}
+
+func TestNodeGetVolumeStatsFSInfoFailure(t *testing.T) {
+	driver := initIBMCSIDriver(t)
+	driver.ns.Stats = &MockStatUtils{fsInfoErr: errors.New("statfs failed")}
+
+	resp, err := driver.ns.NodeGetVolumeStats(context.Background(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId:   defaultVolumeID,
+		VolumePath: notBlockDevice,
+	})
+
+	assert.Nil(t, resp)
+	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.Contains(t, status.Convert(err).Message(), "Code: GetFSInfoFailed, Description: Failed to get FS info, Error: statfs failed")
+}
+
+func TestFilesystemUsage(t *testing.T) {
+	available, capacity, used, inodes, inodesFree, inodesUsed := filesystemUsage(&unix.Statfs_t{
+		Bsize:  4096,
+		Blocks: 1000,
+		Bfree:  300,
+		Bavail: 250,
+		Files:  200,
+		Ffree:  150,
+	})
+
+	assert.Equal(t, int64(1024000), available, "available bytes")
+	assert.Equal(t, int64(4096000), capacity, "total bytes")
+	assert.Equal(t, int64(2867200), used, "used bytes")
+	assert.Equal(t, int64(200), inodes, "total inodes")
+	assert.Equal(t, int64(150), inodesFree, "free inodes")
+	assert.Equal(t, int64(50), inodesUsed, "used inodes")
 }
 
 func TestFSInfo(t *testing.T) {

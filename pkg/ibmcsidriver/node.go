@@ -41,7 +41,6 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-	"k8s.io/kubernetes/pkg/volume/util/fs"
 	mount "k8s.io/mount-utils"
 )
 
@@ -74,7 +73,29 @@ type VolumeMountUtils struct {
 
 // FSInfo ...
 func (su *VolumeStatUtils) FSInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
-	return fs.Info(path)
+	statfs := &unix.Statfs_t{}
+	err := unix.Statfs(path, statfs)
+	if err != nil {
+		return 0, 0, 0, 0, 0, 0, err
+	}
+
+	available, capacity, usage, inodes, inodesFree, inodesUsed := filesystemUsage(statfs)
+	return available, capacity, usage, inodes, inodesFree, inodesUsed, nil
+}
+
+func filesystemUsage(statfs *unix.Statfs_t) (int64, int64, int64, int64, int64, int64) {
+	blockSize := int64(statfs.Bsize)
+	available := int64(statfs.Bavail) * blockSize
+	capacity := int64(statfs.Blocks) * blockSize
+
+	// Free blocks can include blocks reserved by the filesystem.
+	usage := (int64(statfs.Blocks) - int64(statfs.Bfree)) * blockSize
+
+	inodes := int64(statfs.Files)
+	inodesFree := int64(statfs.Ffree)
+	inodesUsed := inodes - inodesFree
+
+	return available, capacity, usage, inodes, inodesFree, inodesUsed
 }
 
 const (
